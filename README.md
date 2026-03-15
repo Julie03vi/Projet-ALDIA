@@ -15,3 +15,10 @@ Pour reproduire les résultats, exécutez le code sur Kaggle :
 4. **Exécutez toutes les cellules**
 
 Le code générera automatiquement les résultats dans le dossier de sortie.
+## Données prétraitées
+
+Les données prétraitées utilisées pour l'entraînement et l'évaluation du modèle ne sont pas incluses dans ce dépôt GitHub en raison de leur taille.
+
+Elles sont disponibles au téléchargement via le lien Google Drive suivant :
+
+https://drive.google.com/drive/folders/180e2yBNQR0TGaReRqcEo061yXVXIQbu3?usp=sharing
