@@ -1,0 +1,1202 @@
+# ==================== UNET 3D TUMEUR COLON - VERSION 4H AVEC VISU 3 AXES ====================
+
+import os
+import re
+import gc
+import json
+import time
+import random
+import warnings
+from pathlib import Path
+from datetime import datetime
+from dataclasses import dataclass, asdict
+
+import numpy as np
+import pandas as pd
+import nibabel as nib
+import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+
+from torch.utils.data import Dataset, DataLoader
+from sklearn.model_selection import train_test_split
+from tqdm import tqdm
+from scipy.ndimage import gaussian_filter
+
+warnings.filterwarnings("ignore")
+
+# ==================== CONFIG GPU ====================
+
+print("=" * 80)
+print("UNET 3D TUMEUR COLON - VERSION 4H AVEC VISU 3 AXES")
+print("=" * 80)
+print("PyTorch :", torch.__version__)
+print("CUDA dispo :", torch.cuda.is_available())
+
+if torch.cuda.is_available():
+    print("GPU :", torch.cuda.get_device_name(0))
+    print(f"Mémoire GPU : {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+    torch.cuda.empty_cache()
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:256,expandable_segments:True"
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# ==================== CONFIG OPTIMISÉE 4H ====================
+
+@dataclass
+class Config3D:
+    DATA_PATH: str = "/kaggle/input/datasets/julievitteaud/colon-data/Task10_Colon"
+    OUTPUT_DIR: str = "/kaggle/working/colon_segmentation_results"
+
+    IN_CHANNELS: int = 1
+    OUT_CHANNELS: int = 1
+    PATCH_SIZE: tuple = (28, 64, 64)  # Compromis (28 au lieu de 32)
+    FEATURES: tuple = (24, 48, 96, 192)  # Architecture COMPLÈTE (la bonne)
+
+    BATCH_SIZE: int = 3  # Batch plus grand
+    GRAD_ACCUM_STEPS: int = 1  # Pas d'accumulation
+    EPOCHS: int = 60  # 60 époques au lieu de 100
+    LR: float = 2.5e-4
+    WEIGHT_DECAY: float = 1e-4
+
+    PATIENCE: int = 12  # Patience modérée
+    MIN_DELTA: float = 0.001
+
+    BCE_WEIGHT: float = 0.4
+    DICE_WEIGHT: float = 0.6
+
+    TRAIN_RATIO: float = 0.70
+    VAL_RATIO: float = 0.15
+    TEST_RATIO: float = 0.15
+    RANDOM_SEED: int = 42
+
+    SAMPLES_PER_VOLUME: int = 30  # 30 patches au lieu de 40
+    TUMOR_RATIO: float = 0.6
+    MIN_TUMOR_VOXELS: int = 25
+
+    NORM_PERCENTILES: tuple = (5, 95)
+    NORM_CLIP: tuple = (-3, 3)
+
+    USE_AUGMENTATION: bool = True  # Garde l'augmentation (importante)
+    AUGMENT_PROB: float = 0.4  # Probabilité réduite
+
+    NUM_TEST_VOLUMES: int = 19  # TOUS les patients test
+    SLICE_THRESHOLD: float = 0.4
+
+    NUM_WORKERS: int = 2
+    PIN_MEMORY: bool = True
+
+    VIS_BATCH_SIZE: int = 8
+    VIS_STRIDE_DIV: int = 2
+
+    @property
+    def CHECKPOINT_DIR(self):
+        return f"{self.OUTPUT_DIR}/checkpoints"
+
+    @property
+    def CONTEXT_DIR(self):
+        return f"{self.OUTPUT_DIR}/context"
+
+    @property
+    def VISUALS_DIR(self):
+        return f"{self.OUTPUT_DIR}/visualisations"
+
+    @property
+    def TEST_DIR(self):
+        return f"{self.OUTPUT_DIR}/test_results"
+
+    @property
+    def PREDICTIONS_DIR(self):
+        return f"{self.OUTPUT_DIR}/predictions"
+
+    @property
+    def EFFECTIVE_BATCH_SIZE(self):
+        return self.BATCH_SIZE * self.GRAD_ACCUM_STEPS
+
+config = Config3D()
+
+for dir_path in [
+    config.OUTPUT_DIR,
+    config.CHECKPOINT_DIR,
+    config.CONTEXT_DIR,
+    config.VISUALS_DIR,
+    config.TEST_DIR,
+    config.PREDICTIONS_DIR,
+]:
+    os.makedirs(dir_path, exist_ok=True)
+
+with open(f"{config.CONTEXT_DIR}/config.json", "w", encoding="utf-8") as f:
+    json.dump(asdict(config), f, indent=2)
+
+print("\nDataset :", config.DATA_PATH)
+print("Output  :", config.OUTPUT_DIR)
+print("Patch   :", config.PATCH_SIZE, "(compromis vitesse/qualité)")
+print("Features:", config.FEATURES, "(architecture COMPLÈTE conservée)")
+print("Batch   :", config.BATCH_SIZE)
+print("Epochs  :", config.EPOCHS, "/ 100")
+print("Patches/volume:", config.SAMPLES_PER_VOLUME, "/ 40")
+print("-" * 80)
+
+# ==================== SEED ====================
+
+random.seed(config.RANDOM_SEED)
+np.random.seed(config.RANDOM_SEED)
+torch.manual_seed(config.RANDOM_SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(config.RANDOM_SEED)
+    torch.cuda.manual_seed_all(config.RANDOM_SEED)
+
+# ==================== HELPERS ====================
+
+def extract_patient_id_from_image(path: Path):
+    name = path.name
+    if name.startswith("._"):
+        return None
+    m = re.match(r"(colon_\d+)_0000\.nii(\.gz)?$", name)
+    if m:
+        return m.group(1)
+    m = re.match(r"(colon_\d+)", name)
+    return m.group(1) if m else None
+
+def extract_patient_id_from_label(path: Path):
+    name = path.name
+    if name.startswith("._"):
+        return None
+    m = re.match(r"(colon_\d+)\.nii(\.gz)?$", name)
+    if m:
+        return m.group(1)
+    m = re.match(r"(colon_\d+)", name)
+    return m.group(1) if m else None
+
+def build_pairs(data_path):
+    images_dir = Path(data_path) / "imagesTr"
+    labels_dir = Path(data_path) / "labelsTr"
+
+    image_files = sorted([p for p in images_dir.glob("*.nii*") if not p.name.startswith("._")])
+    label_files = sorted([p for p in labels_dir.glob("*.nii*") if not p.name.startswith("._")])
+
+    image_map = {}
+    for p in image_files:
+        pid = extract_patient_id_from_image(p)
+        if pid is not None:
+            image_map[pid] = str(p)
+
+    label_map = {}
+    for p in label_files:
+        pid = extract_patient_id_from_label(p)
+        if pid is not None:
+            label_map[pid] = str(p)
+
+    common_ids = sorted(set(image_map.keys()) & set(label_map.keys()))
+    pairs = [{"patient_id": pid, "image": image_map[pid], "label": label_map[pid]} for pid in common_ids]
+    return pairs
+
+def save_json(obj, path):
+    """Sauvegarde JSON avec conversion automatique des types numpy"""
+    def convert(o):
+        if isinstance(o, np.integer):
+            return int(o)
+        if isinstance(o, np.floating):
+            return float(o)
+        if isinstance(o, np.ndarray):
+            return o.tolist()
+        return o
+    
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2, default=convert)
+
+def autocast_context():
+    return torch.amp.autocast("cuda", enabled=torch.cuda.is_available())
+
+def pad_to_shape(arr, target_shape, constant_value=0):
+    d, h, w = arr.shape
+    td, th, tw = target_shape
+
+    pad_d = max(0, td - d)
+    pad_h = max(0, th - h)
+    pad_w = max(0, tw - w)
+
+    before_d = pad_d // 2
+    after_d = pad_d - before_d
+    before_h = pad_h // 2
+    after_h = pad_h - before_h
+    before_w = pad_w // 2
+    after_w = pad_w - before_w
+
+    arr_padded = np.pad(
+        arr,
+        ((before_d, after_d), (before_h, after_h), (before_w, after_w)),
+        mode="constant",
+        constant_values=constant_value,
+    )
+    return arr_padded
+
+def compute_percentile_stats(image_path, percentiles=(5, 95)):
+    try:
+        img = nib.load(image_path).get_fdata(dtype=np.float32)
+        p1 = float(np.percentile(img, percentiles[0]))
+        p2 = float(np.percentile(img, percentiles[1]))
+        if p2 - p1 < 1e-6:
+            p2 = p1 + 1.0
+        return p1, p2
+    except Exception:
+        return 0.0, 1.0
+
+def normalize_volume_or_patch(arr, p_low, p_high, clip_range):
+    arr = (arr - p_low) / (p_high - p_low + 1e-6)
+    return np.clip(arr, clip_range[0], clip_range[1])
+
+def compute_starts(size, patch, stride):
+    if size <= patch:
+        return [0]
+    starts = list(range(0, size - patch + 1, stride))
+    last = size - patch
+    if starts[-1] != last:
+        starts.append(last)
+    return starts
+
+# ==================== MÉTRIQUES ====================
+
+class SegmentationMetrics3D:
+    def __init__(self, threshold=0.4):
+        self.threshold = threshold
+        self.reset()
+
+    def reset(self):
+        self.dice_scores = []
+        self.iou_scores = []
+        self.precisions = []
+        self.recalls = []
+        self.specificities = []
+        self.total_tp = 0
+        self.total_fp = 0
+        self.total_fn = 0
+        self.total_tn = 0
+        self.volumes_gt = []
+
+    def update(self, pred_logits, target):
+        pred = (torch.sigmoid(pred_logits) > self.threshold).float()
+
+        for i in range(pred.size(0)):
+            p = pred[i].view(-1)
+            t = target[i].view(-1)
+
+            tp = (p * t).sum().item()
+            fp = (p * (1 - t)).sum().item()
+            fn = ((1 - p) * t).sum().item()
+            tn = ((1 - p) * (1 - t)).sum().item()
+
+            self.total_tp += tp
+            self.total_fp += fp
+            self.total_fn += fn
+            self.total_tn += tn
+
+            smooth = 1e-6
+            dice = (2 * tp + smooth) / (2 * tp + fp + fn + smooth)
+            iou = (tp + smooth) / (tp + fp + fn + smooth)
+            precision = (tp + smooth) / (tp + fp + smooth)
+            recall = (tp + smooth) / (tp + fn + smooth)
+            specificity = (tn + smooth) / (tn + fp + smooth)
+
+            self.dice_scores.append(dice)
+            self.iou_scores.append(iou)
+            self.precisions.append(precision)
+            self.recalls.append(recall)
+            self.specificities.append(specificity)
+            self.volumes_gt.append(tp + fn)
+
+    def get_metrics(self):
+        return {
+            "dice": float(np.mean(self.dice_scores)) if self.dice_scores else 0.0,
+            "dice_std": float(np.std(self.dice_scores)) if self.dice_scores else 0.0,
+            "iou": float(np.mean(self.iou_scores)) if self.iou_scores else 0.0,
+            "precision": float(np.mean(self.precisions)) if self.precisions else 0.0,
+            "recall": float(np.mean(self.recalls)) if self.recalls else 0.0,
+            "specificity": float(np.mean(self.specificities)) if self.specificities else 0.0,
+            "total_tp": int(self.total_tp),
+            "total_fp": int(self.total_fp),
+            "total_fn": int(self.total_fn),
+            "total_tn": int(self.total_tn),
+            "n_patches": len(self.dice_scores),
+            "n_patches_with_tumor": int(len([v for v in self.volumes_gt if v > 0])),
+        }
+
+    def print_metrics(self, title="MÉTRIQUES"):
+        m = self.get_metrics()
+        print(f"\n{title} (seuil={self.threshold}):")
+        print(f"  Dice        : {m['dice']:.4f} ± {m['dice_std']:.4f}")
+        print(f"  IoU         : {m['iou']:.4f}")
+        print(f"  Precision   : {m['precision']:.4f}")
+        print(f"  Recall      : {m['recall']:.4f}")
+        print(f"  Specificity : {m['specificity']:.4f}")
+        print(f"  Patches avec tumeur : {m['n_patches_with_tumor']}/{m['n_patches']}")
+
+# ==================== LOSS ====================
+
+class CombinedLoss3D(nn.Module):
+    def __init__(self, bce_weight=0.4, dice_weight=0.6):
+        super().__init__()
+        self.bce_weight = bce_weight
+        self.dice_weight = dice_weight
+        self.bce = nn.BCEWithLogitsLoss()
+
+    def dice_loss(self, pred, target, smooth=1e-6):
+        pred = torch.sigmoid(pred)
+        intersection = (pred * target).sum(dim=(2, 3, 4))
+        union = pred.sum(dim=(2, 3, 4)) + target.sum(dim=(2, 3, 4))
+        dice = (2 * intersection + smooth) / (union + smooth)
+        return 1 - dice.mean()
+
+    def forward(self, pred, target):
+        return self.bce_weight * self.bce(pred, target) + self.dice_weight * self.dice_loss(pred, target)
+
+# ==================== MODÈLE COMPLET ====================
+
+class ConvBlock3D(nn.Module):
+    def __init__(self, in_c, out_c, dropout=0.1, depth=2):
+        super().__init__()
+        layers = []
+        for i in range(depth):
+            cin = in_c if i == 0 else out_c
+            layers.append(nn.Conv3d(cin, out_c, 3, padding=1))
+            layers.append(nn.BatchNorm3d(out_c))
+            layers.append(nn.ReLU(inplace=True))
+            if i < depth - 1:
+                layers.append(nn.Dropout3d(dropout))
+        self.block = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.block(x)
+
+class UNet3D(nn.Module):
+    def __init__(self, in_channels=1, out_channels=1, features=(24, 48, 96, 192)):
+        super().__init__()
+        f = list(features)
+
+        self.enc1 = ConvBlock3D(in_channels, f[0], depth=2)
+        self.enc2 = ConvBlock3D(f[0], f[1], depth=2)
+        self.enc3 = ConvBlock3D(f[1], f[2], depth=2)
+        self.enc4 = ConvBlock3D(f[2], f[3], depth=2)
+
+        self.pool = nn.MaxPool3d(2)
+        self.bottleneck = ConvBlock3D(f[3], f[3] * 2, depth=2)
+
+        self.up4 = nn.ConvTranspose3d(f[3] * 2, f[3], 2, 2)
+        self.dec4 = ConvBlock3D(f[3] * 2, f[3], depth=2)
+
+        self.up3 = nn.ConvTranspose3d(f[3], f[2], 2, 2)
+        self.dec3 = ConvBlock3D(f[2] * 2, f[2], depth=2)
+
+        self.up2 = nn.ConvTranspose3d(f[2], f[1], 2, 2)
+        self.dec2 = ConvBlock3D(f[1] * 2, f[1], depth=2)
+
+        self.up1 = nn.ConvTranspose3d(f[1], f[0], 2, 2)
+        self.dec1 = ConvBlock3D(f[0] * 2, f[0], depth=2)
+
+        self.final = nn.Conv3d(f[0], out_channels, 1)
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, (nn.Conv3d, nn.ConvTranspose3d)):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm3d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        e1 = self.enc1(x)
+        e2 = self.enc2(self.pool(e1))
+        e3 = self.enc3(self.pool(e2))
+        e4 = self.enc4(self.pool(e3))
+
+        b = self.bottleneck(self.pool(e4))
+
+        d4 = self.up4(b)
+        if d4.shape[2:] != e4.shape[2:]:
+            d4 = F.interpolate(d4, size=e4.shape[2:], mode="trilinear", align_corners=False)
+        d4 = self.dec4(torch.cat([d4, e4], dim=1))
+
+        d3 = self.up3(d4)
+        if d3.shape[2:] != e3.shape[2:]:
+            d3 = F.interpolate(d3, size=e3.shape[2:], mode="trilinear", align_corners=False)
+        d3 = self.dec3(torch.cat([d3, e3], dim=1))
+
+        d2 = self.up2(d3)
+        if d2.shape[2:] != e2.shape[2:]:
+            d2 = F.interpolate(d2, size=e2.shape[2:], mode="trilinear", align_corners=False)
+        d2 = self.dec2(torch.cat([d2, e2], dim=1))
+
+        d1 = self.up1(d2)
+        if d1.shape[2:] != e1.shape[2:]:
+            d1 = F.interpolate(d1, size=e1.shape[2:], mode="trilinear", align_corners=False)
+        d1 = self.dec1(torch.cat([d1, e1], dim=1))
+
+        return self.final(d1)
+
+# ==================== DATASET OPTIMISÉ ====================
+
+class ColonDataset3D(Dataset):
+    def __init__(self, pairs, phase="train", norm_stats=None):
+        self.pairs = pairs
+        self.phase = phase
+        self.patch_size = config.PATCH_SIZE
+        self.samples_per_volume = config.SAMPLES_PER_VOLUME if phase == "train" else max(1, config.SAMPLES_PER_VOLUME // 2)
+        self.augment = config.USE_AUGMENTATION and phase == "train"
+        self.tumor_ratio = config.TUMOR_RATIO
+        self.min_tumor_voxels = config.MIN_TUMOR_VOXELS
+
+        print(f"\nChargement dataset {phase} : {len(self.pairs)} volumes")
+
+        self.volume_stats = {} if norm_stats is None else norm_stats
+        self.volume_shapes = []
+        self.small_volumes = []
+        self.patches = []
+
+        for vol_idx, pair in enumerate(self.pairs):
+            try:
+                img_nib = nib.load(pair["image"])
+                mask_nib = nib.load(pair["label"])
+
+                img_shape = img_nib.shape
+                mask_shape = mask_nib.shape
+
+                if img_shape != mask_shape:
+                    print(f"⚠️ Shape différente pour {pair['patient_id']} : image {img_shape}, label {mask_shape}")
+                    continue
+
+                self.volume_shapes.append(img_shape)
+                d, h, w = img_shape
+
+                if d < self.patch_size[0] or h < self.patch_size[1] or w < self.patch_size[2]:
+                    self.small_volumes.append(vol_idx)
+
+                if norm_stats is None:
+                    self.volume_stats[vol_idx] = compute_percentile_stats(pair["image"], config.NORM_PERCENTILES)
+
+            except Exception as e:
+                print(f"❌ Erreur lecture {pair['patient_id']} : {e}")
+                self.volume_shapes.append(None)
+                if norm_stats is None:
+                    self.volume_stats[vol_idx] = (0.0, 1.0)
+
+        print(f"Volumes nécessitant padding : {len(self.small_volumes)}")
+
+        self.patches = self._generate_patches()
+
+        if phase == "train":
+            random.shuffle(self.patches)
+
+        print(f"Nombre de patches {phase} : {len(self.patches)}")
+
+    def _generate_patches(self):
+        patches = []
+        pd, ph, pw = self.patch_size
+
+        for vol_idx, pair in enumerate(tqdm(self.pairs, desc=f"Patches {self.phase}")):
+            try:
+                mask = nib.load(pair["label"]).get_fdata(dtype=np.float32)
+                d, h, w = mask.shape
+
+                max_z = max(0, d - pd)
+                max_y = max(0, h - ph)
+                max_x = max(0, w - pw)
+
+                tumor_voxels = np.where(mask > 0)
+                has_tumor = len(tumor_voxels[0]) > 0
+
+                if self.phase == "train" and has_tumor:
+                    n_tumor = int(self.samples_per_volume * self.tumor_ratio)
+                    n_background = self.samples_per_volume - n_tumor
+
+                    tumor_found = 0
+                    attempts = 0
+                    max_attempts = max(50, n_tumor * 30)
+
+                    while tumor_found < n_tumor and attempts < max_attempts:
+                        attempts += 1
+                        ridx = np.random.randint(len(tumor_voxels[0]))
+                        cz, cy, cx = tumor_voxels[0][ridx], tumor_voxels[1][ridx], tumor_voxels[2][ridx]
+
+                        z = max(0, min(cz - pd // 2, max_z)) if max_z > 0 else 0
+                        y = max(0, min(cy - ph // 2, max_y)) if max_y > 0 else 0
+                        x = max(0, min(cx - pw // 2, max_x)) if max_x > 0 else 0
+
+                        z_end = min(z + pd, d)
+                        y_end = min(y + ph, h)
+                        x_end = min(x + pw, w)
+
+                        patch_mask = mask[z:z_end, y:y_end, x:x_end]
+                        if (patch_mask > 0).sum() >= self.min_tumor_voxels:
+                            patches.append((vol_idx, z, y, x, z_end - z, y_end - y, x_end - x))
+                            tumor_found += 1
+
+                    for _ in range(n_background):
+                        z = np.random.randint(0, max_z + 1) if max_z > 0 else 0
+                        y = np.random.randint(0, max_y + 1) if max_y > 0 else 0
+                        x = np.random.randint(0, max_x + 1) if max_x > 0 else 0
+
+                        z_end = min(z + pd, d)
+                        y_end = min(y + ph, h)
+                        x_end = min(x + pw, w)
+
+                        patches.append((vol_idx, z, y, x, z_end - z, y_end - y, x_end - x))
+
+                else:
+                    step_z = max(1, d // 4)
+                    step_y = max(1, h // 4)
+                    step_x = max(1, w // 4)
+
+                    z_positions = list(range(0, d, step_z))
+                    y_positions = list(range(0, h, step_y))
+                    x_positions = list(range(0, w, step_x))
+
+                    if len(z_positions) == 0:
+                        z_positions = [0]
+                    if len(y_positions) == 0:
+                        y_positions = [0]
+                    if len(x_positions) == 0:
+                        x_positions = [0]
+
+                    for z in z_positions:
+                        for y in y_positions:
+                            for x in x_positions:
+                                z = min(z, max(0, d - 1))
+                                y = min(y, max(0, h - 1))
+                                x = min(x, max(0, w - 1))
+
+                                z_end = min(z + pd, d)
+                                y_end = min(y + ph, h)
+                                x_end = min(x + pw, w)
+
+                                patches.append((vol_idx, z, y, x, z_end - z, y_end - y, x_end - x))
+
+            except Exception as e:
+                print(f"⚠️ Erreur génération patches {pair['patient_id']} : {e}")
+
+        return patches
+
+    def __len__(self):
+        return len(self.patches)
+
+    def __getitem__(self, idx):
+        vol_idx, z, y, x, actual_d, actual_h, actual_w = self.patches[idx]
+        pair = self.pairs[vol_idx]
+        pd, ph, pw = self.patch_size
+
+        try:
+            img = nib.load(pair["image"])
+            mask = nib.load(pair["label"])
+
+            z_end = z + actual_d
+            y_end = y + actual_h
+            x_end = x + actual_w
+
+            img_patch = np.array(img.dataobj[z:z_end, y:y_end, x:x_end], dtype=np.float32)
+            mask_patch = np.array(mask.dataobj[z:z_end, y:y_end, x:x_end], dtype=np.float32)
+
+            img_patch = pad_to_shape(img_patch, (pd, ph, pw), constant_value=0)
+            mask_patch = pad_to_shape(mask_patch, (pd, ph, pw), constant_value=0)
+
+            if vol_idx in self.volume_stats:
+                p5, p95 = self.volume_stats[vol_idx]
+            else:
+                p5, p95 = 0.0, 1.0
+
+            img_patch = normalize_volume_or_patch(img_patch, p5, p95, config.NORM_CLIP)
+            mask_patch = (mask_patch > 0).astype(np.float32)
+
+            # Augmentation
+            if self.augment and np.random.random() < config.AUGMENT_PROB:
+                if np.random.random() > 0.5:
+                    axis = np.random.randint(0, 3)
+                    img_patch = np.flip(img_patch, axis=axis).copy()
+                    mask_patch = np.flip(mask_patch, axis=axis).copy()
+                
+                if np.random.random() > 0.7:
+                    k = np.random.randint(1, 4)
+                    img_patch = np.rot90(img_patch, k, axes=(1, 2)).copy()
+                    mask_patch = np.rot90(mask_patch, k, axes=(1, 2)).copy()
+
+            return (
+                torch.from_numpy(img_patch).unsqueeze(0).float(),
+                torch.from_numpy(mask_patch).unsqueeze(0).float(),
+            )
+
+        except Exception as e:
+            print(f"⚠️ Erreur patch {idx} ({pair['patient_id']}) : {e}")
+            return (
+                torch.zeros((1, pd, ph, pw), dtype=torch.float32),
+                torch.zeros((1, pd, ph, pw), dtype=torch.float32),
+            )
+
+# ==================== VISUALISATION ENTRAÎNEMENT ====================
+
+def visualize_training(history):
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    epochs = range(1, len(history["train_loss"]) + 1)
+
+    axes[0].plot(epochs, history["train_loss"], label="Train", linewidth=2)
+    axes[0].plot(epochs, history["val_loss"], label="Val", linewidth=2)
+    axes[0].set_title("Courbes de Loss")
+    axes[0].set_xlabel("Époque")
+    axes[0].set_ylabel("Loss")
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+
+    axes[1].plot(epochs, history["train_dice"], label="Train", linewidth=2)
+    axes[1].plot(epochs, history["val_dice"], label="Val", linewidth=2)
+    axes[1].set_title("Courbes de Dice")
+    axes[1].set_xlabel("Époque")
+    axes[1].set_ylabel("Dice")
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3)
+
+    plt.suptitle(f"Courbes d'entraînement - meilleur Dice val = {max(history['val_dice']):.4f}")
+    plt.tight_layout()
+    plt.savefig(f"{config.VISUALS_DIR}/courbes_entrainement.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print("✅ Courbes d'entraînement sauvegardées")
+
+# ==================== INFÉRENCE VOLUME ENTIER ====================
+
+def predict_full_volume(model, pair, norm_stats, threshold=0.4):
+    """
+    Prédiction sur volume entier avec les stats du train
+    """
+    img_nib = nib.load(pair["image"])
+    img = img_nib.get_fdata(dtype=np.float32)
+
+    # Utiliser les stats du train SAUVEGARDÉES
+    patient_id = pair["patient_id"]
+    if patient_id in norm_stats:
+        p5, p95 = norm_stats[patient_id]
+    else:
+        # Fallback si les stats ne sont pas trouvées
+        p5, p95 = compute_percentile_stats(pair["image"], config.NORM_PERCENTILES)
+
+    img_norm = normalize_volume_or_patch(img, p5, p95, config.NORM_CLIP)
+
+    d, h, w = img_norm.shape
+    pd, ph, pw = config.PATCH_SIZE
+
+    stride_z = max(1, pd // config.VIS_STRIDE_DIV)
+    stride_y = max(1, ph // config.VIS_STRIDE_DIV)
+    stride_x = max(1, pw // config.VIS_STRIDE_DIV)
+
+    z_starts = compute_starts(d, pd, stride_z)
+    y_starts = compute_starts(h, ph, stride_y)
+    x_starts = compute_starts(w, pw, stride_x)
+
+    prob_sum = np.zeros((d, h, w), dtype=np.float32)
+    prob_count = np.zeros((d, h, w), dtype=np.float32)
+
+    batch_patches = []
+    batch_positions = []
+
+    model.eval()
+    with torch.no_grad():
+        for z in z_starts:
+            for y in y_starts:
+                for x in x_starts:
+                    patch = img_norm[z:min(z + pd, d), y:min(y + ph, h), x:min(x + pw, w)]
+                    patch = pad_to_shape(patch, (pd, ph, pw), constant_value=0)
+
+                    batch_patches.append(patch)
+                    batch_positions.append((z, y, x))
+
+                    if len(batch_patches) >= config.VIS_BATCH_SIZE:
+                        batch_tensor = torch.from_numpy(np.array(batch_patches)).unsqueeze(1).float().to(device)
+
+                        with autocast_context():
+                            outputs = model(batch_tensor)
+                            preds = torch.sigmoid(outputs).detach().cpu().numpy()[:, 0]
+
+                        for j, (pz, py, px) in enumerate(batch_positions):
+                            dz = min(pd, d - pz)
+                            dy = min(ph, h - py)
+                            dx = min(pw, w - px)
+
+                            prob_sum[pz:pz+dz, py:py+dy, px:px+dx] += preds[j][:dz, :dy, :dx]
+                            prob_count[pz:pz+dz, py:py+dy, px:px+dx] += 1.0
+
+                        batch_patches = []
+                        batch_positions = []
+
+        if batch_patches:
+            batch_tensor = torch.from_numpy(np.array(batch_patches)).unsqueeze(1).float().to(device)
+
+            with autocast_context():
+                outputs = model(batch_tensor)
+                preds = torch.sigmoid(outputs).detach().cpu().numpy()[:, 0]
+
+            for j, (pz, py, px) in enumerate(batch_positions):
+                dz = min(pd, d - pz)
+                dy = min(ph, h - py)
+                dx = min(pw, w - px)
+
+                prob_sum[pz:pz+dz, py:py+dy, px:px+dx] += preds[j][:dz, :dy, :dx]
+                prob_count[pz:pz+dz, py:py+dy, px:px+dx] += 1.0
+
+    avg_prob = prob_sum / np.maximum(prob_count, 1e-6)
+    avg_prob = gaussian_filter(avg_prob, sigma=0.5)
+    pred_binary = (avg_prob > threshold).astype(np.float32)
+
+    gt = nib.load(pair["label"]).get_fdata(dtype=np.float32)
+    gt = (gt > 0).astype(np.float32)
+
+    return img, gt, avg_prob, pred_binary
+
+# ==================== VISUALISATION 3 AXES ====================
+
+def visualize_full_volume_3axes(model, pair, norm_stats, threshold=0.4):
+    """
+    Visualisation sur les 3 axes pour un patient
+    """
+    # Prédiction complète
+    img, gt, prob, pred = predict_full_volume(model, pair, norm_stats, threshold)
+    
+    # Dimensions
+    d, h, w = img.shape
+    
+    # Trouver les coupes avec le plus de tumeur
+    gt_sum_z = gt.sum(axis=(1, 2))
+    gt_sum_y = gt.sum(axis=(0, 2))
+    gt_sum_x = gt.sum(axis=(0, 1))
+    
+    # Vérifier s'il y a des tumeurs
+    has_tumor_z = gt_sum_z.max() > 0
+    has_tumor_y = gt_sum_y.max() > 0
+    has_tumor_x = gt_sum_x.max() > 0
+    has_tumor = has_tumor_z or has_tumor_y or has_tumor_x
+    
+    # Coupes les plus représentatives
+    best_z = np.argmax(gt_sum_z) if has_tumor_z else d // 2
+    best_y = np.argmax(gt_sum_y) if has_tumor_y else h // 2
+    best_x = np.argmax(gt_sum_x) if has_tumor_x else w // 2
+    
+    # Créer la figure
+    fig, axes = plt.subplots(3, 4, figsize=(20, 15))
+    
+    # Titres des colonnes
+    axes[0, 0].set_title("Image", fontsize=14, fontweight='bold')
+    axes[0, 1].set_title("Vérité terrain", fontsize=14, fontweight='bold')
+    axes[0, 2].set_title("Prédiction", fontsize=14, fontweight='bold')
+    axes[0, 3].set_title("Superposition", fontsize=14, fontweight='bold')
+    
+    # ===== AXE Z =====
+    img_slice_z = img[best_z]
+    gt_slice_z = gt[best_z]
+    prob_slice_z = prob[best_z]
+    pred_slice_z = pred[best_z]
+    
+    img_disp_z = (img_slice_z - img_slice_z.min()) / (img_slice_z.max() - img_slice_z.min() + 1e-6)
+    
+    axes[0, 0].imshow(img_disp_z, cmap='gray', origin='lower')
+    axes[0, 0].set_ylabel(f"Axe Z\n(coupe {best_z}/{d-1})", fontsize=12, fontweight='bold')
+    
+    axes[0, 1].imshow(gt_slice_z, cmap='Reds', vmin=0, vmax=1, origin='lower')
+    im = axes[0, 2].imshow(prob_slice_z, cmap='hot', vmin=0, vmax=1, origin='lower')
+    
+    overlay_z = np.zeros((*img_slice_z.shape, 3))
+    overlay_z[..., 0] = pred_slice_z
+    overlay_z[..., 1] = gt_slice_z
+    overlay_z[..., 2] = img_disp_z * 0.3
+    axes[0, 3].imshow(overlay_z, origin='lower')
+    
+    # ===== AXE Y =====
+    img_slice_y = img[:, best_y, :]
+    gt_slice_y = gt[:, best_y, :]
+    prob_slice_y = prob[:, best_y, :]
+    pred_slice_y = pred[:, best_y, :]
+    
+    img_disp_y = (img_slice_y - img_slice_y.min()) / (img_slice_y.max() - img_slice_y.min() + 1e-6)
+    
+    axes[1, 0].imshow(img_disp_y, cmap='gray', origin='lower')
+    axes[1, 0].set_ylabel(f"Axe Y\n(coupe {best_y}/{h-1})", fontsize=12, fontweight='bold')
+    
+    axes[1, 1].imshow(gt_slice_y, cmap='Reds', vmin=0, vmax=1, origin='lower')
+    axes[1, 2].imshow(prob_slice_y, cmap='hot', vmin=0, vmax=1, origin='lower')
+    
+    overlay_y = np.zeros((*img_slice_y.shape, 3))
+    overlay_y[..., 0] = pred_slice_y
+    overlay_y[..., 1] = gt_slice_y
+    overlay_y[..., 2] = img_disp_y * 0.3
+    axes[1, 3].imshow(overlay_y, origin='lower')
+    
+    # ===== AXE X =====
+    img_slice_x = img[:, :, best_x]
+    gt_slice_x = gt[:, :, best_x]
+    prob_slice_x = prob[:, :, best_x]
+    pred_slice_x = pred[:, :, best_x]
+    
+    img_disp_x = (img_slice_x - img_slice_x.min()) / (img_slice_x.max() - img_slice_x.min() + 1e-6)
+    
+    axes[2, 0].imshow(img_disp_x, cmap='gray', origin='lower')
+    axes[2, 0].set_ylabel(f"Axe X\n(coupe {best_x}/{w-1})", fontsize=12, fontweight='bold')
+    axes[2, 0].set_xlabel("Y →", fontsize=10)
+    
+    axes[2, 1].imshow(gt_slice_x, cmap='Reds', vmin=0, vmax=1, origin='lower')
+    axes[2, 2].imshow(prob_slice_x, cmap='hot', vmin=0, vmax=1, origin='lower')
+    
+    overlay_x = np.zeros((*img_slice_x.shape, 3))
+    overlay_x[..., 0] = pred_slice_x
+    overlay_x[..., 1] = gt_slice_x
+    overlay_x[..., 2] = img_disp_x * 0.3
+    axes[2, 3].imshow(overlay_x, origin='lower')
+    
+    # Masquer les axes
+    for i in range(3):
+        for j in range(4):
+            axes[i, j].axis('off')
+    
+    # Colorbar
+    cbar_ax = fig.add_axes([0.92, 0.15, 0.01, 0.7])
+    plt.colorbar(im, cax=cbar_ax, label='Probabilité')
+    
+    # Titre
+    status = "AVEC tumeur" if has_tumor else "SANS tumeur"
+    intersection = (pred * gt).sum()
+    union = pred.sum() + gt.sum()
+    dice = (2 * intersection) / (union + 1e-6)
+    
+    plt.suptitle(f"{pair['patient_id']} - {status} - Dice: {dice:.4f}", fontsize=16, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 0.90, 0.96])
+    
+    # Sauvegarde
+    out_path = f"{config.PREDICTIONS_DIR}/{pair['patient_id']}_3axes.png"
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    # Sauvegarde NIfTI
+    pred_nii = nib.Nifti1Image(pred.astype(np.uint8), affine=nib.load(pair["image"]).affine)
+    nib.save(pred_nii, f"{config.PREDICTIONS_DIR}/{pair['patient_id']}_prediction.nii.gz")
+    
+    print(f"  Dice: {dice:.4f} - {status}")
+    print(f"  ✅ Sauvegardé: {out_path}")
+    
+    return float(dice)
+
+# ==================== MAIN ====================
+
+def main():
+    print("\n" + "=" * 80)
+    print("DÉMARRAGE DE L'ENTRAÎNEMENT - VERSION 4H")
+    print("=" * 80)
+
+    print("Device :", device)
+
+    if device.type == "cuda":
+        gc.collect()
+        torch.cuda.empty_cache()
+        print(f"Mémoire GPU initiale : {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+
+    # ===== 1. PAIRES =====
+    pairs = build_pairs(config.DATA_PATH)
+    print(f"\nPaires image/label trouvées : {len(pairs)}")
+
+    if len(pairs) == 0:
+        raise ValueError("Aucune paire image/label trouvée.")
+
+    patient_ids = [p["patient_id"] for p in pairs]
+
+    train_ids, temp_ids = train_test_split(
+        patient_ids,
+        train_size=config.TRAIN_RATIO,
+        random_state=config.RANDOM_SEED,
+        shuffle=True,
+    )
+
+    val_ratio_rel = config.VAL_RATIO / (config.VAL_RATIO + config.TEST_RATIO)
+    val_ids, test_ids = train_test_split(
+        temp_ids,
+        train_size=val_ratio_rel,
+        random_state=config.RANDOM_SEED,
+        shuffle=True,
+    )
+
+    train_pairs = [p for p in pairs if p["patient_id"] in train_ids]
+    val_pairs = [p for p in pairs if p["patient_id"] in val_ids]
+    test_pairs = [p for p in pairs if p["patient_id"] in test_ids]
+
+    split_info = {
+        "train_ids": train_ids,
+        "val_ids": val_ids,
+        "test_ids": test_ids,
+        "train_files": train_pairs,
+        "val_files": val_pairs,
+        "test_files": test_pairs,
+        "random_seed": config.RANDOM_SEED,
+    }
+    save_json(split_info, f"{config.CONTEXT_DIR}/split_indices.json")
+
+    print("\nSplit :")
+    print("Train :", len(train_pairs), "patients")
+    print("Val   :", len(val_pairs), "patients")
+    print("Test  :", len(test_pairs), "patients")
+
+    # ===== 2. DATASETS =====
+    print("\nCréation des datasets...")
+    train_dataset = ColonDataset3D(train_pairs, phase="train")
+    val_dataset = ColonDataset3D(val_pairs, phase="val", norm_stats=train_dataset.volume_stats)
+    test_dataset = ColonDataset3D(test_pairs, phase="test", norm_stats=train_dataset.volume_stats)
+
+    # Sauvegarder les stats de normalisation du train
+    norm_stats_for_vis = {}
+    for i, pair in enumerate(train_pairs):
+        if i in train_dataset.volume_stats:
+            norm_stats_for_vis[pair["patient_id"]] = train_dataset.volume_stats[i]
+
+    save_json(norm_stats_for_vis, f"{config.CONTEXT_DIR}/normalization_stats.json")
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.BATCH_SIZE,
+        shuffle=True,
+        num_workers=config.NUM_WORKERS,
+        pin_memory=config.PIN_MEMORY and torch.cuda.is_available(),
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config.BATCH_SIZE,
+        shuffle=False,
+        num_workers=config.NUM_WORKERS,
+        pin_memory=config.PIN_MEMORY and torch.cuda.is_available(),
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=config.BATCH_SIZE,
+        shuffle=False,
+        num_workers=config.NUM_WORKERS,
+        pin_memory=config.PIN_MEMORY and torch.cuda.is_available(),
+    )
+
+    # ===== 3. MODÈLE =====
+    print("\nCréation du modèle...")
+    model = UNet3D(
+        in_channels=config.IN_CHANNELS,
+        out_channels=config.OUT_CHANNELS,
+        features=config.FEATURES,
+    ).to(device)
+
+    print(f"Paramètres : {sum(p.numel() for p in model.parameters()):,}")
+
+    criterion = CombinedLoss3D(config.BCE_WEIGHT, config.DICE_WEIGHT)
+    optimizer = optim.AdamW(model.parameters(), lr=config.LR, weight_decay=config.WEIGHT_DECAY)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=5)
+    scaler = torch.amp.GradScaler("cuda", enabled=torch.cuda.is_available())
+
+    history = {"train_loss": [], "val_loss": [], "train_dice": [], "val_dice": []}
+
+    best_dice = 0.0
+    patience_counter = 0
+    start_time = time.time()
+
+    print("\n" + "=" * 80)
+    print("ENTRAÎNEMENT")
+    print("=" * 80)
+
+    for epoch in range(config.EPOCHS):
+        print(f"\nÉpoque {epoch + 1}/{config.EPOCHS}")
+        epoch_start = time.time()
+
+        if device.type == "cuda":
+            gc.collect()
+            torch.cuda.empty_cache()
+
+        # ----- TRAIN -----
+        model.train()
+        train_loss = 0.0
+        train_metrics = SegmentationMetrics3D(threshold=config.SLICE_THRESHOLD)
+        optimizer.zero_grad(set_to_none=True)
+
+        for batch_idx, (images, masks) in enumerate(tqdm(train_loader, desc="Train", leave=False)):
+            images = images.to(device, non_blocking=True)
+            masks = masks.to(device, non_blocking=True)
+
+            with autocast_context():
+                outputs = model(images)
+                loss = criterion(outputs, masks)
+
+            scaler.scale(loss).backward()
+
+            if (batch_idx + 1) % config.GRAD_ACCUM_STEPS == 0 or (batch_idx + 1) == len(train_loader):
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
+
+            train_loss += loss.item()
+            train_metrics.update(outputs.detach(), masks)
+
+        # ----- VAL -----
+        model.eval()
+        val_loss = 0.0
+        val_metrics = SegmentationMetrics3D(threshold=config.SLICE_THRESHOLD)
+
+        with torch.no_grad():
+            for images, masks in tqdm(val_loader, desc="Val", leave=False):
+                images = images.to(device, non_blocking=True)
+                masks = masks.to(device, non_blocking=True)
+
+                with autocast_context():
+                    outputs = model(images)
+                    loss = criterion(outputs, masks)
+
+                val_loss += loss.item()
+                val_metrics.update(outputs, masks)
+
+        avg_train_loss = train_loss / max(len(train_loader), 1)
+        avg_val_loss = val_loss / max(len(val_loader), 1)
+
+        train_m = train_metrics.get_metrics()
+        val_m = val_metrics.get_metrics()
+
+        history["train_loss"].append(avg_train_loss)
+        history["val_loss"].append(avg_val_loss)
+        history["train_dice"].append(train_m["dice"])
+        history["val_dice"].append(val_m["dice"])
+
+        epoch_time = time.time() - epoch_start
+
+        print(f"Train - Loss: {avg_train_loss:.4f} | Dice: {train_m['dice']:.4f}")
+        print(f"Val   - Loss: {avg_val_loss:.4f} | Dice: {val_m['dice']:.4f}")
+        print(f"Temps : {epoch_time:.1f}s")
+
+        if device.type == "cuda":
+            print(f"Mémoire GPU : {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+
+        scheduler.step(val_m["dice"])
+
+        if val_m["dice"] > best_dice + config.MIN_DELTA:
+            best_dice = val_m["dice"]
+            patience_counter = 0
+
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "best_dice": best_dice,
+                    "config": asdict(config),
+                },
+                f"{config.CHECKPOINT_DIR}/best_model.pth",
+            )
+            print(f"✅ Nouveau meilleur modèle : Dice val = {best_dice:.4f}")
+        else:
+            patience_counter += 1
+            print(f"⏳ Patience : {patience_counter}/{config.PATIENCE}")
+
+            if patience_counter >= config.PATIENCE:
+                print("\n⏹️ Early stopping")
+                break
+
+    # ===== 4. ÉVALUATION =====
+    print("\n" + "=" * 80)
+    print("ÉVALUATION FINALE")
+    print("=" * 80)
+
+    checkpoint = torch.load(f"{config.CHECKPOINT_DIR}/best_model.pth", map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+
+    print("\nRecherche du meilleur seuil sur validation...")
+    thresholds = [0.30, 0.35, 0.40, 0.45, 0.50]
+    threshold_scores = []
+
+    for thresh in thresholds:
+        val_metrics = SegmentationMetrics3D(threshold=thresh)
+        with torch.no_grad():
+            for images, masks in tqdm(val_loader, desc=f"Val seuil={thresh}", leave=False):
+                images = images.to(device, non_blocking=True)
+                masks = masks.to(device, non_blocking=True)
+
+                with autocast_context():
+                    outputs = model(images)
+
+                val_metrics.update(outputs, masks)
+
+        m = val_metrics.get_metrics()
+        print(f"Seuil {thresh:.2f} -> Dice={m['dice']:.4f} ± {m['dice_std']:.4f}")
+        threshold_scores.append((thresh, m["dice"]))
+
+    best_threshold, best_val_dice_thresh = max(threshold_scores, key=lambda x: x[1])
+    print(f"\n🏆 Meilleur seuil validation : {best_threshold} (Dice={best_val_dice_thresh:.4f})")
+
+    test_metrics = SegmentationMetrics3D(threshold=best_threshold)
+    with torch.no_grad():
+        for images, masks in tqdm(test_loader, desc="Test", leave=False):
+            images = images.to(device, non_blocking=True)
+            masks = masks.to(device, non_blocking=True)
+
+            with autocast_context():
+                outputs = model(images)
+
+            test_metrics.update(outputs, masks)
+
+    test_metrics.print_metrics("RÉSULTATS TEST")
+
+    # ===== 5. VISUALISATIONS =====
+    print("\n" + "=" * 80)
+    print("GÉNÉRATION DES VISUALISATIONS 3 AXES")
+    print("=" * 80)
+
+    visualize_training(history)
+    
+    print(f"\n🖼️ Visualisation 3 axes pour {len(test_pairs)} patients...")
+    volume_metrics = []
+    
+    for i, pair in enumerate(test_pairs):
+        print(f"\nPatient {i+1}/{len(test_pairs)} : {pair['patient_id']}")
+        dice = visualize_full_volume_3axes(model, pair, norm_stats_for_vis, threshold=best_threshold)
+        volume_metrics.append({"patient": pair["patient_id"], "dice": dice})
+
+    # ===== 6. SAUVEGARDE =====
+    total_time = time.time() - start_time
+
+    final_results = {
+        "date": datetime.now().isoformat(),
+        "best_val_dice_training": float(best_dice),
+        "best_threshold": float(best_threshold),
+        "best_val_dice_threshold_search": float(best_val_dice_thresh),
+        "test_metrics": {k: float(v) if isinstance(v, (np.floating, np.integer)) else v 
+                         for k, v in test_metrics.get_metrics().items()},
+        "volume_metrics": volume_metrics,
+        "total_time_hours": float(total_time / 3600.0),
+        "total_epochs": len(history["train_loss"]),
+        "config": asdict(config),
+    }
+
+    save_json(final_results, f"{config.OUTPUT_DIR}/final_results.json")
+    pd.DataFrame(history).to_csv(f"{config.OUTPUT_DIR}/history.csv", index=False)
+    pd.DataFrame(threshold_scores, columns=["threshold", "dice"]).to_csv(
+        f"{config.TEST_DIR}/threshold_validation.csv", index=False
+    )
+    if volume_metrics:
+        pd.DataFrame(volume_metrics).to_csv(f"{config.TEST_DIR}/volume_metrics.csv", index=False)
+
+    print("\n" + "=" * 80)
+    print("ENTRAÎNEMENT TERMINÉ")
+    print("=" * 80)
+    print("Output dir           :", config.OUTPUT_DIR)
+    print("Best val Dice train  :", f"{best_dice:.4f}")
+    print("Best threshold       :", best_threshold)
+    print("Best test Dice       :", f"{test_metrics.get_metrics()['dice']:.4f}")
+    print("Temps total          :", f"{total_time/3600:.2f} heures")
+    print("Modèle               :", f"{config.CHECKPOINT_DIR}/best_model.pth")
+    print("Courbes              :", f"{config.VISUALS_DIR}/courbes_entrainement.png")
+    print("Visualisations 3 axes:", config.PREDICTIONS_DIR)
+    print("=" * 80)
+
+if __name__ == "__main__":
+    main()
