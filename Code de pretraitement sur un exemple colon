@@ -1,0 +1,236 @@
+# ============================================================
+# PIPELINE PRETRAITEMENT CT + LABEL (sans Frangi)
+# Version robuste Kaggle / NIfTI
+# - ignore les fichiers parasites "._*"
+# - retrouve automatiquement le vrai CT et le vrai label
+# - filtre HU [0 ; 700]
+# - normalisation [0 ; 1]
+# - nettoyage morphologique
+# - ROI basée sur le label
+# ============================================================
+
+from pathlib import Path
+import numpy as np
+import nibabel as nib
+import matplotlib.pyplot as plt
+from scipy.ndimage import binary_opening, binary_closing
+
+# =========================
+# PARAMETRES
+# =========================
+IMAGES_DIR = Path("/kaggle/input/task10-colon/Task10_Colon/imagesTr")
+LABELS_DIR = Path("/kaggle/input/task10-colon/Task10_Colon/labelsTr")
+OUTPUT_DIR = Path("/kaggle/working")
+
+PATIENT_NAME = "colon_001"   # sans .nii.gz
+
+HU_MIN = 0
+HU_MAX = 700
+
+MARGIN_Z = 4
+MARGIN_Y = 20
+MARGIN_X = 20
+
+OPENING_STRUCTURE = np.ones((1, 3, 3), dtype=bool)
+CLOSING_STRUCTURE = np.ones((3, 3, 3), dtype=bool)
+
+
+# =========================
+# FONCTIONS UTILITAIRES
+# =========================
+def is_valid_nifti(path: Path) -> bool:
+    name = path.name
+    return (
+        path.is_file()
+        and not name.startswith("._")
+        and (name.endswith(".nii") or name.endswith(".nii.gz"))
+    )
+
+def find_patient_file(folder: Path, patient_name: str) -> Path:
+    """
+    Cherche un vrai fichier NIfTI du patient en ignorant les fichiers parasites ._*
+    """
+    candidates = []
+    for p in folder.iterdir():
+        if is_valid_nifti(p):
+            stem = p.name.replace(".nii.gz", "").replace(".nii", "")
+            if stem == patient_name:
+                candidates.append(p)
+
+    if len(candidates) == 0:
+        valid_files = sorted([p.name for p in folder.iterdir() if is_valid_nifti(p)])
+        raise FileNotFoundError(
+            f"Aucun fichier trouvé pour '{patient_name}' dans {folder}\n"
+            f"Exemples de fichiers valides trouvés : {valid_files[:10]}"
+        )
+
+    # priorité au .nii.gz s'il existe
+    candidates = sorted(candidates, key=lambda x: (0 if x.name.endswith(".nii.gz") else 1, x.name))
+    return candidates[0]
+
+def load_nifti(path):
+    nii = nib.load(str(path))
+    arr = nii.get_fdata(dtype=np.float32)
+    return arr, nii.affine, nii.header
+
+def transpose_to_zyx(arr):
+    if arr.ndim == 4:
+        arr = arr[..., 0]
+    return np.transpose(arr, (2, 1, 0)).copy()
+
+def transpose_back_to_xyz(arr_zyx):
+    return np.transpose(arr_zyx, (2, 1, 0)).copy()
+
+def hu_filter(ct, hu_min=0, hu_max=700):
+    mask = (ct >= hu_min) & (ct <= hu_max)
+    ct_filtered = np.where(mask, ct, 0).astype(np.float32)
+    return ct_filtered, mask.astype(np.uint8)
+
+def normalize_zero_one(ct, hu_min=0, hu_max=700):
+    ct_clip = np.clip(ct, hu_min, hu_max)
+    ct_norm = (ct_clip - hu_min) / (hu_max - hu_min + 1e-8)
+    return ct_norm.astype(np.float32)
+
+def morphological_cleanup(mask_bool):
+    cleaned = binary_opening(mask_bool, structure=OPENING_STRUCTURE)
+    cleaned = binary_closing(cleaned, structure=CLOSING_STRUCTURE)
+    return cleaned.astype(bool)
+
+def get_bbox_from_label(mask3d, margin_z=4, margin_y=20, margin_x=20):
+    coords = np.argwhere(mask3d > 0)
+    if coords.size == 0:
+        raise ValueError("Le label est vide, impossible de calculer une ROI.")
+
+    zmin, ymin, xmin = coords.min(axis=0)
+    zmax, ymax, xmax = coords.max(axis=0)
+
+    zmin = max(0, zmin - margin_z)
+    ymin = max(0, ymin - margin_y)
+    xmin = max(0, xmin - margin_x)
+
+    zmax = min(mask3d.shape[0] - 1, zmax + margin_z)
+    ymax = min(mask3d.shape[1] - 1, ymax + margin_y)
+    xmax = min(mask3d.shape[2] - 1, xmax + margin_x)
+
+    return (zmin, zmax + 1), (ymin, ymax + 1), (xmin, xmax + 1)
+
+def crop_volume(vol, bbox):
+    (z0, z1), (y0, y1), (x0, x1) = bbox
+    return vol[z0:z1, y0:y1, x0:x1]
+
+def save_nifti_zyx(vol_zyx, affine, header, out_path):
+    vol_xyz = transpose_back_to_xyz(vol_zyx)
+    nib.save(nib.Nifti1Image(vol_xyz, affine, header), str(out_path))
+
+def show_comparison(ct_raw, ct_hu, ct_norm, label, title_prefix=""):
+    z_counts = label.reshape(label.shape[0], -1).sum(axis=1)
+    z = int(np.argmax(z_counts)) if z_counts.max() > 0 else ct_raw.shape[0] // 2
+
+    fig, axes = plt.subplots(1, 4, figsize=(18, 5))
+
+    axes[0].imshow(ct_raw[z], cmap="gray", vmin=-200, vmax=300)
+    axes[0].set_title(f"{title_prefix}CT original")
+    axes[0].axis("off")
+
+    axes[1].imshow(ct_hu[z], cmap="gray", vmin=0, vmax=700)
+    axes[1].set_title(f"{title_prefix}CT filtré HU [0,700]")
+    axes[1].axis("off")
+
+    axes[2].imshow(ct_norm[z], cmap="gray", vmin=0, vmax=1)
+    axes[2].set_title(f"{title_prefix}CT normalisé [0,1]")
+    axes[2].axis("off")
+
+    axes[3].imshow(ct_raw[z], cmap="gray", vmin=-200, vmax=300)
+    axes[3].imshow(label[z], cmap="Reds", alpha=0.35)
+    axes[3].set_title(f"{title_prefix}Label superposé")
+    axes[3].axis("off")
+
+    plt.tight_layout()
+    plt.show()
+
+
+# =========================
+# VERIFICATION DOSSIERS
+# =========================
+if not IMAGES_DIR.exists():
+    raise FileNotFoundError(f"Dossier images introuvable : {IMAGES_DIR}")
+if not LABELS_DIR.exists():
+    raise FileNotFoundError(f"Dossier labels introuvable : {LABELS_DIR}")
+
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# =========================
+# RECHERCHE AUTOMATIQUE CT + LABEL
+# =========================
+ct_path = find_patient_file(IMAGES_DIR, PATIENT_NAME)
+label_path = find_patient_file(LABELS_DIR, PATIENT_NAME)
+
+print("CT trouvé    :", ct_path)
+print("Label trouvé :", label_path)
+
+# =========================
+# CHARGEMENT
+# =========================
+ct_raw_xyz, affine, header = load_nifti(ct_path)
+lab_xyz, _, _ = load_nifti(label_path)
+
+ct_raw = transpose_to_zyx(ct_raw_xyz)
+label = transpose_to_zyx(lab_xyz) > 0
+
+print("Shape CT    (Z,Y,X):", ct_raw.shape)
+print("Shape Label (Z,Y,X):", label.shape)
+print("HU min/max :", float(ct_raw.min()), float(ct_raw.max()))
+print("Voxels label :", int(label.sum()))
+
+# =========================
+# FILTRE HU
+# =========================
+ct_hu, hu_mask = hu_filter(ct_raw, HU_MIN, HU_MAX)
+
+# =========================
+# NORMALISATION
+# =========================
+ct_norm = normalize_zero_one(ct_hu, HU_MIN, HU_MAX)
+
+# =========================
+# MORPHOLOGIE
+# =========================
+hu_mask_clean = morphological_cleanup(hu_mask.astype(bool))
+ct_clean = np.where(hu_mask_clean, ct_norm, 0).astype(np.float32)
+
+# =========================
+# ROI LABEL
+# =========================
+bbox = get_bbox_from_label(label, MARGIN_Z, MARGIN_Y, MARGIN_X)
+print("BBox ROI :", bbox)
+
+ct_crop = crop_volume(ct_clean, bbox)
+label_crop = crop_volume(label.astype(np.uint8), bbox)
+hu_mask_crop = crop_volume(hu_mask_clean.astype(np.uint8), bbox)
+
+print("Shape CT crop    :", ct_crop.shape)
+print("Shape Label crop :", label_crop.shape)
+
+# =========================
+# VISUALISATION
+# =========================
+show_comparison(ct_raw, ct_hu, ct_norm, label, title_prefix="")
+show_comparison(ct_crop, ct_crop, ct_crop, label_crop, title_prefix="ROI ")
+
+# =========================
+# SAUVEGARDE
+# =========================
+base_name = PATIENT_NAME
+
+save_nifti_zyx(ct_hu, affine, header, OUTPUT_DIR / f"{base_name}_HU_0_700.nii.gz")
+save_nifti_zyx(hu_mask.astype(np.uint8), affine, header, OUTPUT_DIR / f"{base_name}_HU_mask.nii.gz")
+save_nifti_zyx(ct_clean, affine, header, OUTPUT_DIR / f"{base_name}_HU_norm_morpho.nii.gz")
+save_nifti_zyx(label.astype(np.uint8), affine, header, OUTPUT_DIR / f"{base_name}_label_bin.nii.gz")
+
+save_nifti_zyx(ct_crop, affine, header, OUTPUT_DIR / f"{base_name}_ROI_preprocessed.nii.gz")
+save_nifti_zyx(label_crop.astype(np.uint8), affine, header, OUTPUT_DIR / f"{base_name}_ROI_label.nii.gz")
+save_nifti_zyx(hu_mask_crop.astype(np.uint8), affine, header, OUTPUT_DIR / f"{base_name}_ROI_mask.nii.gz")
+
+print("\nFichiers sauvegardés dans :", OUTPUT_DIR)
+for p in sorted(OUTPUT_DIR.glob(f"{base_name}*")):
+    print(" -", p.name)
