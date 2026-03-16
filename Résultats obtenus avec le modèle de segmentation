@@ -1,0 +1,626 @@
+================================================================================
+UNET 3D TUMEUR COLON - VERSION 4H AVEC VISU 3 AXES
+================================================================================
+PyTorch : 2.9.0+cu126
+CUDA dispo : True
+GPU : Tesla P100-PCIE-16GB
+Mémoire GPU : 17.06 GB
+
+Dataset : /kaggle/input/datasets/julievitteaud/colon-data/Task10_Colon
+Output  : /kaggle/working/colon_segmentation_results
+Patch   : (28, 64, 64) (compromis vitesse/qualité)
+Features: (24, 48, 96, 192) (architecture COMPLÈTE conservée)
+Batch   : 3
+Epochs  : 60 / 100
+Patches/volume: 30 / 40
+--------------------------------------------------------------------------------
+
+================================================================================
+DÉMARRAGE DE L'ENTRAÎNEMENT - VERSION 4H
+================================================================================
+Device : cuda
+Mémoire GPU initiale : 0.19 GB
+
+Paires image/label trouvées : 126
+
+Split :
+Train : 88 patients
+Val   : 19 patients
+Test  : 19 patients
+
+Création des datasets...
+
+Chargement dataset train : 88 volumes
+Volumes nécessitant padding : 14
+Patches train: 100%|██████████| 88/88 [00:22<00:00,  3.85it/s]
+Nombre de patches train : 2640
+
+Chargement dataset val : 19 volumes
+Volumes nécessitant padding : 2
+Patches val: 100%|██████████| 19/19 [00:04<00:00,  4.17it/s]
+Nombre de patches val : 1440
+
+Chargement dataset test : 19 volumes
+Volumes nécessitant padding : 0
+Patches test: 100%|██████████| 19/19 [00:03<00:00,  5.37it/s]
+Nombre de patches test : 1488
+
+Création du modèle...
+Paramètres : 12,703,849
+
+================================================================================
+ENTRAÎNEMENT
+================================================================================
+
+Époque 1/60
+                                                        
+Train - Loss: 0.5889 | Dice: 0.2231
+Val   - Loss: 0.6287 | Dice: 0.3769
+Temps : 257.2s
+Mémoire GPU : 0.36 GB
+✅ Nouveau meilleur modèle : Dice val = 0.3769
+
+Époque 2/60
+                                                        
+Train - Loss: 0.5198 | Dice: 0.3684
+Val   - Loss: 0.6187 | Dice: 0.3703
+Temps : 256.0s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 1/12
+
+Époque 3/60
+                                                        
+Train - Loss: 0.4984 | Dice: 0.4068
+Val   - Loss: 0.6153 | Dice: 0.3408
+Temps : 254.6s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 2/12
+
+Époque 4/60
+                                                        
+Train - Loss: 0.4807 | Dice: 0.4472
+Val   - Loss: 0.6310 | Dice: 0.4032
+Temps : 254.9s
+Mémoire GPU : 0.36 GB
+✅ Nouveau meilleur modèle : Dice val = 0.4032
+
+Époque 5/60
+                                                        
+Train - Loss: 0.4653 | Dice: 0.4632
+Val   - Loss: 0.6198 | Dice: 0.1990
+Temps : 255.8s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 1/12
+
+Époque 6/60
+                                                      s]
+Train - Loss: 0.4572 | Dice: 0.4761
+Val   - Loss: 0.6163 | Dice: 0.4579
+Temps : 255.5s
+Mémoire GPU : 0.36 GB
+✅ Nouveau meilleur modèle : Dice val = 0.4579
+
+Époque 7/60
+                                                        
+Train - Loss: 0.4478 | Dice: 0.4984
+Val   - Loss: 0.6187 | Dice: 0.4785
+Temps : 255.1s
+Mémoire GPU : 0.36 GB
+✅ Nouveau meilleur modèle : Dice val = 0.4785
+
+Époque 8/60
+                                                        
+Train - Loss: 0.4390 | Dice: 0.5207
+Val   - Loss: 0.6132 | Dice: 0.5313
+Temps : 255.6s
+Mémoire GPU : 0.36 GB
+✅ Nouveau meilleur modèle : Dice val = 0.5313
+
+Époque 9/60
+                                                        
+Train - Loss: 0.4339 | Dice: 0.5241
+Val   - Loss: 0.6156 | Dice: 0.4699
+Temps : 254.7s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 1/12
+
+Époque 10/60
+                                                        
+Train - Loss: 0.4290 | Dice: 0.5358
+Val   - Loss: 0.6071 | Dice: 0.4641
+Temps : 255.8s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 2/12
+
+Époque 11/60
+                                                        
+Train - Loss: 0.4148 | Dice: 0.5527
+Val   - Loss: 0.6091 | Dice: 0.5669
+Temps : 256.3s
+Mémoire GPU : 0.36 GB
+✅ Nouveau meilleur modèle : Dice val = 0.5669
+
+Époque 12/60
+                                                        
+Train - Loss: 0.4160 | Dice: 0.5455
+Val   - Loss: 0.6079 | Dice: 0.5383
+Temps : 254.8s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 1/12
+
+Époque 13/60
+                                                        
+Train - Loss: 0.4070 | Dice: 0.5631
+Val   - Loss: 0.6113 | Dice: 0.5019
+Temps : 254.6s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 2/12
+
+Époque 14/60
+                                                        
+Train - Loss: 0.4006 | Dice: 0.5746
+Val   - Loss: 0.6121 | Dice: 0.5111
+Temps : 255.6s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 3/12
+
+Époque 15/60
+                                                        
+Train - Loss: 0.3954 | Dice: 0.5830
+Val   - Loss: 0.6048 | Dice: 0.6251
+Temps : 255.4s
+Mémoire GPU : 0.36 GB
+✅ Nouveau meilleur modèle : Dice val = 0.6251
+
+Époque 16/60
+                                                        
+Train - Loss: 0.3926 | Dice: 0.5946
+Val   - Loss: 0.6087 | Dice: 0.5357
+Temps : 256.2s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 1/12
+
+Époque 17/60
+                                                        
+Train - Loss: 0.3864 | Dice: 0.5997
+Val   - Loss: 0.6090 | Dice: 0.5749
+Temps : 255.5s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 2/12
+
+Époque 18/60
+                                                        
+Train - Loss: 0.3845 | Dice: 0.6054
+Val   - Loss: 0.6070 | Dice: 0.6130
+Temps : 255.3s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 3/12
+
+Époque 19/60
+                                                        
+Train - Loss: 0.3817 | Dice: 0.6127
+Val   - Loss: 0.6064 | Dice: 0.5761
+Temps : 255.4s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 4/12
+
+Époque 20/60
+                                                        
+Train - Loss: 0.3721 | Dice: 0.6229
+Val   - Loss: 0.6071 | Dice: 0.6286
+Temps : 254.9s
+Mémoire GPU : 0.36 GB
+✅ Nouveau meilleur modèle : Dice val = 0.6286
+
+Époque 22/60
+                                                        
+Train - Loss: 0.3757 | Dice: 0.6214
+Val   - Loss: 0.6062 | Dice: 0.5604
+Temps : 254.6s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 1/12
+
+Époque 23/60
+                                                        
+Train - Loss: 0.3691 | Dice: 0.6190
+Val   - Loss: 0.6076 | Dice: 0.5856
+Temps : 253.1s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 2/12
+
+Époque 24/60
+                                                        
+Train - Loss: 0.3665 | Dice: 0.6356
+Val   - Loss: 0.6127 | Dice: 0.5734
+Temps : 254.9s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 3/12
+
+Époque 25/60
+                                                        
+Train - Loss: 0.3629 | Dice: 0.6402
+Val   - Loss: 0.6056 | Dice: 0.7017
+Temps : 254.9s
+Mémoire GPU : 0.36 GB
+✅ Nouveau meilleur modèle : Dice val = 0.7017
+
+Époque 26/60
+                                                        
+Train - Loss: 0.3615 | Dice: 0.6360
+Val   - Loss: 0.6058 | Dice: 0.5969
+Temps : 255.4s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 1/12
+
+Époque 27/60
+                                                        
+Train - Loss: 0.3589 | Dice: 0.6547
+Val   - Loss: 0.6053 | Dice: 0.6781
+Temps : 255.7s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 2/12
+
+Époque 28/60
+                                                        
+Train - Loss: 0.3572 | Dice: 0.6509
+Val   - Loss: 0.6078 | Dice: 0.6170
+Temps : 256.2s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 3/12
+
+Époque 29/60
+                                                        
+Train - Loss: 0.3531 | Dice: 0.6636
+Val   - Loss: 0.6036 | Dice: 0.6668
+Temps : 255.9s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 4/12
+
+Époque 30/60
+                                                        
+Train - Loss: 0.3534 | Dice: 0.6502
+Val   - Loss: 0.6052 | Dice: 0.6618
+Temps : 254.7s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 5/12
+
+Époque 31/60
+                                                        
+Train - Loss: 0.3518 | Dice: 0.6650
+Val   - Loss: 0.6038 | Dice: 0.7169
+Temps : 265.4s
+Mémoire GPU : 0.36 GB
+✅ Nouveau meilleur modèle : Dice val = 0.7169
+
+Époque 32/60
+                                                        
+Train - Loss: 0.3527 | Dice: 0.6621
+Val   - Loss: 0.6045 | Dice: 0.5504
+Temps : 256.3s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 1/12
+
+Époque 33/60
+                                                        
+Train - Loss: 0.3507 | Dice: 0.6666
+Val   - Loss: 0.6049 | Dice: 0.6189
+Temps : 255.8s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 2/12
+
+Époque 34/60
+                                                        
+Train - Loss: 0.3452 | Dice: 0.6770
+Val   - Loss: 0.6055 | Dice: 0.6227
+Temps : 256.1s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 3/12
+
+Époque 35/60
+                                                        
+Train - Loss: 0.3433 | Dice: 0.6787
+Val   - Loss: 0.6026 | Dice: 0.6592
+Temps : 255.1s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 4/12
+
+Époque 36/60
+                                                        
+Train - Loss: 0.3440 | Dice: 0.6727
+Val   - Loss: 0.6069 | Dice: 0.6595
+Temps : 255.0s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 5/12
+
+Époque 37/60
+                                                        
+Train - Loss: 0.3421 | Dice: 0.6711
+Val   - Loss: 0.6102 | Dice: 0.5518
+Temps : 254.9s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 6/12
+
+Époque 38/60
+                                                        
+Train - Loss: 0.3354 | Dice: 0.6989
+Val   - Loss: 0.6048 | Dice: 0.6636
+Temps : 255.7s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 7/12
+
+Époque 39/60
+                                                        
+Train - Loss: 0.3318 | Dice: 0.7112
+Val   - Loss: 0.6067 | Dice: 0.5934
+Temps : 255.1s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 8/12
+
+Époque 40/60
+                                                        
+Train - Loss: 0.3347 | Dice: 0.7057
+Val   - Loss: 0.6058 | Dice: 0.6427
+Temps : 255.8s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 9/12
+
+Époque 41/60
+                                                        
+Train - Loss: 0.3272 | Dice: 0.7150
+Val   - Loss: 0.6058 | Dice: 0.7423
+Temps : 255.0s
+Mémoire GPU : 0.36 GB
+✅ Nouveau meilleur modèle : Dice val = 0.7423
+
+Époque 42/60
+                                                        
+Train - Loss: 0.3279 | Dice: 0.7228
+Val   - Loss: 0.6051 | Dice: 0.7073
+Temps : 254.1s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 1/12
+
+Époque 43/60
+                                                        
+Train - Loss: 0.3286 | Dice: 0.7091
+Val   - Loss: 0.6073 | Dice: 0.5886
+Temps : 254.6s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 2/12
+
+Époque 44/60
+                                                        
+Train - Loss: 0.3265 | Dice: 0.7141
+Val   - Loss: 0.6044 | Dice: 0.7132
+Temps : 255.2s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 3/12
+
+Époque 45/60
+                                                        
+Train - Loss: 0.3280 | Dice: 0.7002
+Val   - Loss: 0.6071 | Dice: 0.6116
+Temps : 255.1s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 4/12
+
+Époque 46/60
+                                                        
+Train - Loss: 0.3258 | Dice: 0.7157
+Val   - Loss: 0.6032 | Dice: 0.7746
+Temps : 255.8s
+Mémoire GPU : 0.36 GB
+✅ Nouveau meilleur modèle : Dice val = 0.7746
+
+Époque 47/60
+                                                        
+Train - Loss: 0.3214 | Dice: 0.7175
+Val   - Loss: 0.6055 | Dice: 0.7159
+Temps : 255.4s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 1/12
+
+Époque 48/60
+                                                        
+Train - Loss: 0.3222 | Dice: 0.7175
+Val   - Loss: 0.6051 | Dice: 0.6968
+Temps : 256.6s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 2/12
+
+Époque 49/60
+                                                        
+Train - Loss: 0.3218 | Dice: 0.7199
+Val   - Loss: 0.6040 | Dice: 0.7477
+Temps : 254.6s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 3/12
+
+Époque 50/60
+                                                        
+Train - Loss: 0.3238 | Dice: 0.7179
+Val   - Loss: 0.6064 | Dice: 0.6803
+Temps : 255.1s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 4/12
+
+Époque 51/60
+                                                        
+Train - Loss: 0.3185 | Dice: 0.7219
+Val   - Loss: 0.6042 | Dice: 0.7185
+Temps : 255.0s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 6/12
+
+Époque 53/60
+                                                        
+Train - Loss: 0.3187 | Dice: 0.7396
+Val   - Loss: 0.6048 | Dice: 0.7168
+Temps : 255.0s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 7/12
+
+Époque 54/60
+                                                        
+Train - Loss: 0.3182 | Dice: 0.7359
+Val   - Loss: 0.6045 | Dice: 0.6936
+Temps : 255.1s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 8/12
+
+Époque 55/60
+                                                        
+Train - Loss: 0.3134 | Dice: 0.7427
+Val   - Loss: 0.6028 | Dice: 0.7582
+Temps : 255.1s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 9/12
+
+Époque 56/60
+                                                        
+Train - Loss: 0.3153 | Dice: 0.7410
+Val   - Loss: 0.6033 | Dice: 0.7437
+Temps : 254.7s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 10/12
+
+Époque 57/60
+                                                        
+Train - Loss: 0.3152 | Dice: 0.7410
+Val   - Loss: 0.6032 | Dice: 0.7580
+Temps : 254.1s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 11/12
+
+Époque 58/60
+                                                        
+Train - Loss: 0.3166 | Dice: 0.7552
+Val   - Loss: 0.6040 | Dice: 0.7194
+Temps : 254.0s
+Mémoire GPU : 0.36 GB
+⏳ Patience : 12/12
+
+⏹️ Early stopping
+
+================================================================================
+ÉVALUATION FINALE
+================================================================================
+
+Recherche du meilleur seuil sur validation...
+                                                                
+Seuil 0.30 -> Dice=0.7433 ± 0.4362
+                                                                 
+Seuil 0.35 -> Dice=0.7628 ± 0.4248
+                                                                
+Seuil 0.40 -> Dice=0.7746 ± 0.4173
+                                                                 
+Seuil 0.45 -> Dice=0.7808 ± 0.4131
+                                                                
+Seuil 0.50 -> Dice=0.7878 ± 0.4083
+
+🏆 Meilleur seuil validation : 0.5 (Dice=0.7878)
+                                                       
+
+RÉSULTATS TEST (seuil=0.5):
+  Dice        : 0.7794 ± 0.4137
+  IoU         : 0.7790
+  Precision   : 0.7886
+  Recall      : 0.9807
+  Specificity : 0.9974
+  Patches avec tumeur : 30/1488
+
+================================================================================
+GÉNÉRATION DES VISUALISATIONS 3 AXES
+================================================================================
+✅ Courbes d'entraînement sauvegardées
+
+🖼️ Visualisation 3 axes pour 19 patients...
+
+Patient 1/19 : colon_024
+  Dice: 0.0000 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_024_3axes.png
+
+Patient 2/19 : colon_025
+  Dice: 0.0000 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_025_3axes.png
+
+Patient 3/19 : colon_026
+  Dice: 0.0143 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_026_3axes.png
+
+Patient 4/19 : colon_032
+  Dice: 0.0000 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_032_3axes.png
+
+Patient 5/19 : colon_046
+  Dice: 0.2281 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_046_3axes.png
+
+Patient 6/19 : colon_054
+  Dice: 0.0000 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_054_3axes.png
+
+Patient 7/19 : colon_066
+  Dice: 0.0000 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_066_3axes.png
+
+Patient 8/19 : colon_075
+  Dice: 0.0000 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_075_3axes.png
+
+Patient 9/19 : colon_086
+  Dice: 0.2196 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_086_3axes.png
+
+Patient 10/19 : colon_091
+  Dice: 0.0104 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_091_3axes.png
+
+Patient 11/19 : colon_104
+  Dice: 0.0000 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_104_3axes.png
+
+Patient 12/19 : colon_122
+  Dice: 0.1231 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_122_3axes.png
+
+Patient 13/19 : colon_131
+  Dice: 0.0309 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_131_3axes.png
+
+Patient 14/19 : colon_159
+  Dice: 0.0915 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_159_3axes.png
+
+Patient 15/19 : colon_163
+  Dice: 0.0000 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_163_3axes.png
+
+Patient 16/19 : colon_165
+  Dice: 0.0000 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_165_3axes.png
+
+Patient 17/19 : colon_166
+  Dice: 0.3609 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_166_3axes.png
+
+Patient 18/19 : colon_194
+  Dice: 0.1737 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_194_3axes.png
+
+Patient 19/19 : colon_208
+  Dice: 0.0000 - AVEC tumeur
+  ✅ Sauvegardé: /kaggle/working/colon_segmentation_results/predictions/colon_208_3axes.png
+
+================================================================================
+ENTRAÎNEMENT TERMINÉ
+================================================================================
+Output dir           : /kaggle/working/colon_segmentation_results
+Best val Dice train  : 0.7746
+Best threshold       : 0.5
+Best test Dice       : 0.7794
+Temps total          : 4.42 heures
+Modèle               : /kaggle/working/colon_segmentation_results/checkpoints/best_model.pth
+Courbes              : /kaggle/working/colon_segmentation_results/visualisations/courbes_entrainement.png
+Visualisations 3 axes: /kaggle/working/colon_segmentation_results/predictions
+================================================================================
